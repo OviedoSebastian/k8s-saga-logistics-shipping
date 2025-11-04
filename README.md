@@ -32,6 +32,190 @@ Al final, ya sea por éxito o por fallo, los últimos tres servicios **siempre s
 
 Al implementar estos tres servicios, ten en cuenta que su lógica de "compensación" es simplemente registrar el estado de cancelación, no necesariamente deshacer una acción previa.
 
+
+## Flujo de la Transacción SAGA y Contratos de API
+
+Para estandarizar la comunicación, el flujo sigue un patrón claro donde el Orquestador gestiona un objeto de estado central para cada pedido.
+
+### 1. La Solicitud Inicial del Cliente
+
+Todo comienza cuando un cliente envía una solicitud al **Orquestador** con la información básica del pedido. Por ejemplo, a un endpoint como `POST /orders`:
+
+```json
+{
+  "user": "cliente-123",
+  "product": "laptop-xyz",
+  "quantity": 1,
+  "shippingAddress": "Calle Falsa 123",
+  "paymentDetails": "visa-ending-9876"
+}
+```
+El **Orquestador** recibe esta solicitud, genera un `orderId` único y crea el objeto de estado SAGA.
+
+### 2. El Objeto de Estado SAGA
+
+Este objeto JSON actúa como un "pasaporte" que viaja a través del flujo. Contiene toda la información del pedido, los resultados de cada paso y el estado general de la transacción.
+
+```json
+{
+  "orderId": "ORD-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+  "status": "PENDING",
+  "user": "cliente-123",
+  "product": "laptop-xyz",
+  "quantity": 1,
+  "shippingAddress": "Calle Falsa 123",
+  "paymentDetails": "visa-ending-9876",
+  
+  "generatedData": {
+    "warehouse": null,
+    "inventory": null,
+    "package": null,
+    "label": null,
+    "carrier": null,
+    "pickup": null,
+    "payment": null,
+    "notification": null,
+    "tracking": null,
+    "customer": null
+  },
+  
+  "stepsCompleted": [],
+  "compensationsExecuted": []
+}
+```
+El Orquestador es responsable de:
+1.  Llamar a cada microservicio en secuencia.
+2.  Enviarles los datos que necesitan.
+3.  Recibir sus respuestas y actualizar el campo `generatedData`.
+4.  Registrar el paso completado en `stepsCompleted`.
+
+### 3. Contrato de API para Cada Microservicio
+
+A continuación se detalla lo que cada microservicio debe hacer y qué se espera que responda.
+
+---
+#### Warehouse Service
+*   **Acción Principal (`POST /reserve`):** Reserva espacio físico para la orden.
+*   **Respuesta esperada:**
+    ```json
+    { "warehouse": { "locationId": "BAY-A12", "spaceReserved": true } }
+    ```
+*   **Acción de Compensación (`POST /cancel_reservation`):** Libera el espacio previamente reservado.
+
+---
+#### Inventory Service
+*   **Acción Principal (`POST /update_stock`):** Descuenta la cantidad del producto del inventario.
+*   **Respuesta esperada:**
+    ```json
+    { "inventory": { "stockUpdated": true, "previousStock": 34, "currentStock": 33 } }
+    ```
+*   **Acción de Compensación (`POST /restock`):** Revierte el descuento, devolviendo los productos al stock.
+
+---
+#### Package Service
+*   **Acción Principal (`POST /create_package`):** Genera una entrada para el paquete y lo asocia a la orden.
+*   **Respuesta esperada:**
+    ```json
+    { "package": { "packageId": "PKG-4421", "status": "PACKAGED" } }
+    ```
+*   **Acción de Compensación (`POST /cancel_package`):** Marca el paquete como anulado.
+
+---
+#### Label Service
+*   **Acción Principal (`POST /generate_label`):** Crea una etiqueta de envío con una guía.
+*   **Respuesta esperada:**
+    ```json
+    { "label": { "labelId": "LBL-5542", "provider": "FastShip" } }
+    ```
+*   **Acción de Compensación (`POST /void_label`):** Anula la etiqueta generada.
+
+---
+#### Carrier Service
+*   **Acción Principal (`POST /assign_carrier`):** Asigna el transportista más adecuado.
+*   **Respuesta esperada:**
+    ```json
+    { "carrier": { "carrierId": "CRR-15-FastShip", "assigned": true } }
+    ```
+*   **Acción de Compensación (`POST /cancel_assignment`):** Libera al transportista de la asignación.
+
+---
+#### Pickup Service
+*   **Acción Principal (`POST /schedule_pickup`):** Programa la fecha y hora de recolección.
+*   **Respuesta esperada:**
+    ```json
+    { "pickup": { "pickupId": "PU-001", "scheduledAt": "2025-11-05T10:00:00Z" } }
+    ```
+*   **Acción de Compensación (`POST /cancel_pickup`):** Cancela la recolección programada.
+
+---
+#### Payment Service
+*   **Acción Principal (`POST /process_payment`):** Procesa el cargo a los detalles de pago.
+*   **Respuesta esperada:**
+    ```json
+    { "payment": { "transactionId": "TX-987123", "amount": 999.99, "status": "CONFIRMED" } }
+    ```
+*   **Acción de Compensación (`POST /refund_payment`):** Emite un reembolso o reversa el cargo.
+
+---
+#### Notification Service
+*   **Acción Principal (`POST /send_confirmation`):** Notifica al cliente que su pedido fue procesado.
+*   **Respuesta esperada:**
+    ```json
+    { "notification": { "confirmationSentTo": "cliente-123@email.com", "status": "SENT" } }
+    ```
+*   **Acción de Compensación (`POST /send_cancellation`):** Notifica al cliente la cancelación del pedido.
+
+---
+#### Tracking Service
+*   **Acción Principal (`POST /start_tracking`):** Registra la orden en el sistema de seguimiento.
+*   **Respuesta esperada:**
+    ```json
+    { "tracking": { "trackingId": "TRK-123456", "status": "IN_TRANSIT" } }
+    ```
+*   **Acción de Compensación (`POST /update_tracking_status`):** Actualiza el estado del seguimiento a "CANCELLED".
+
+---
+#### Customer Service
+*   **Acción Principal (`POST /update_history`):** Actualiza el historial del cliente con el nuevo pedido.
+*   **Respuesta esperada:**
+    ```json
+    { "customer": { "historyUpdated": true, "orderStatus": "COMPLETED" } }
+    ```
+*   **Acción de Compensación (`POST /update_history_cancellation`):** Actualiza el historial del pedido a "CANCELLED".
+
+---
+
+En caso de fallo, el JSON resultante tendria esta estructura:
+
+```JSON
+{
+  "orderId": "ORD-1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+  "status": "FAILED_AND_COMPENSATED", // Un estado más descriptivo
+  "user": "cliente-123",
+  // ...otros datos...
+  
+  "generatedData": {
+    "warehouse": { "locationId": "BAY-A12", "spaceReserved": true, "status": "COMPENSATED" },
+    "inventory": { "stockUpdated": true, "previousStock": 34, "status": "COMPENSATED" },
+    "package": { "packageId": "PKG-4421", "status": "COMPENSATED" },
+    "label": { "labelId": "LBL-5542", "status": "COMPENSATED" },
+    "carrier": { "carrierId": "CRR-15-FastShip", "status": "COMPENSATED" },
+    "pickup": { "pickupId": "PU-001", "status": "COMPENSATED" },
+    "payment": { "status": "FAILED", "error": "Insufficient funds" }, // Se registra el error
+    
+    // Los últimos 3 servicios se llaman con el contexto de cancelación
+    "notification": { "cancellationSentTo": "cliente-123@email.com", "status": "SENT" },
+    "tracking": { "trackingId": "TRK-123456", "status": "CANCELLED" },
+    "customer": { "historyUpdated": true, "orderStatus": "CANCELLED" }
+  },
+  
+  "stepsCompleted": ["warehouse", "inventory", "package", "label", "carrier", "pickup"],
+  "compensationsExecuted": ["pickup", "carrier", "label", "package", "inventory", "warehouse"]
+}
+```
+
+Recuerde añadir a la lista del JSON `stepsCompleted` y `compensationsExecuted` el proceso realizado segun el endpoint.
+
 ## Guía de Implementación
 
 Cada microservicio puede ser desarrollado en el lenguaje que prefieras. Lo esencial es que siga estas directrices para integrarse correctamente en el clúster de Kubernetes.
