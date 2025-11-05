@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transport-service
+  namespace: saga-shipping
+  labels:
+    app: transport-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transport-service
+  template:
+    metadata:
+      labels:
+        app: transport-service
+    spec:
+      containers:
+      - name: transport-service-container
+        image: transport-service:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5005
+        env:
+        - name: SERVICE_NAME
+          value: "transport-service"
+        - name: SERVICE_PORT
+          value: "5005"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5005
+          initialDelaySeconds: 10
+          periodSeconds: 20
