@@ -8,11 +8,11 @@ app = FastAPI(
     description="Servicio encargado de enviar confirmaciones y cancelaciones dentro de la SAGA de logística."
 )
 
-# --- Variables de entorno ---
+# ---- Variables de entorno ---
 SERVICE_NAME = os.getenv("SERVICE_NAME", "notification-service")
 SERVICE_PORT = int(os.getenv("SERVICE_PORT", "5008"))
 
-# --- Base de datos simulada (en memoria) ---
+# ---- Base de datos simulada (en memoria) ---
 notifications_db = []
 
 
