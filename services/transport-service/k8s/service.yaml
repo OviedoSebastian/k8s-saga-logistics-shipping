@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: transport-service
+  namespace: saga-shipping
+  labels:
+    app: transport-service
+spec:
+  type: ClusterIP
+  selector:
+    app: transport-service
+  ports:
+  - name: http
+    protocol: TCP
+    port: 5005
+    targetPort: 5005
